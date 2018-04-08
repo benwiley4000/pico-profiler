@@ -49,6 +49,7 @@ var functionsDeep = 0;
 var currentStringChar = null;
 
 for (var i = 0; i < debugContents.indexOf('__gfx__'); i++) {
+  // console.log('__AFTER_ITERATION__', i);
   if (currentStringChar) {
     var c = debugContents[i];
     if (c === currentStringChar) {
@@ -71,33 +72,41 @@ for (var i = 0; i < debugContents.indexOf('__gfx__'); i++) {
         .slice(i + 8, paramsStartIndex - 1)
         .trim();
       profiledFunctionNames.push(functionName);
-      var parensDeep = 1;
-      var j = paramsStartIndex;
-      while (parensDeep > 0) {
-        var c = debugContents[j];
-        if (currentStringChar) {
-          if (c === currentStringChar) {
-            currentStringChar = null;
-          } else if (c === '\\') {
-            // next char is escaped, so ignore it
-            j++;
-          }
-        } else if (c === '"' || c === '\'') {
-          currentStringChar = c;
-        } else if (c === '(') {
-          parensDeep++;
-        } else if (c === ')') {
-          parensDeep--;
-        }
-        j++;
-      }
-      var startProfileCode = ';__begin_fn_profile(' + functionName + ');';
+      // var parensDeep = 1;
+      // var j = paramsStartIndex;
+      // while (parensDeep > 0) {
+      //   var c = debugContents[j];
+      //   if (currentStringChar) {
+      //     if (c === currentStringChar) {
+      //       currentStringChar = null;
+      //     } else if (c === '\\') {
+      //       // next char is escaped, so ignore it
+      //       j++;
+      //     }
+      //   } else if (c === '"' || c === '\'') {
+      //     currentStringChar = c;
+      //   } else if (c === '(') {
+      //     parensDeep++;
+      //   } else if (c === ')') {
+      //     parensDeep--;
+      //   }
+      //   j++;
+      // }
+      debugContents = insert(
+        debugContents,
+        '_',
+        i + debugContents.slice(i).indexOf(functionName)
+      );
+      var startProfileCode =
+        ';function ' + functionName + '(...);' +
+          ';__begin_fn_profile(' + functionName + ');' +
+          '_';
       debugContents = insert(
         debugContents,
         startProfileCode,
-        j
+        i
       );
-      i = j + startProfileCode.length - 1;
+      i += startProfileCode.length + 1;
     }
     blockStack.push('function');
     functionsDeep++;
@@ -108,13 +117,20 @@ for (var i = 0; i < debugContents.indexOf('__gfx__'); i++) {
       if (blockType === 'function') {
         functionsDeep--;
       }
-      var endProfileCode = ';__end_fn_profile();';
+      if (functionsDeep > 1) {
+        continue;
+      }
+      var endProfileCode =
+          ';local ret =_' + functionName + '(...);' +
+          '__end_fn_profile();' +
+          'return ret;' +
+        'end;';
       debugContents = insert(
         debugContents,
         endProfileCode,
-        i
+        i + 3
       );
-      i = i + endProfileCode - 1;
+      i += 3 + endProfileCode.length;
     } else if (rest.indexOf('if') === 0) {
       blockStack.push('if');
     } else if (rest.indexOf('for') === 0) {
@@ -123,6 +139,10 @@ for (var i = 0; i < debugContents.indexOf('__gfx__'); i++) {
       blockStack.push('while');
     }
   }
+
+  // console.log('Block stack', blockStack)
+  // console.log('Functions deep', functionsDeep);
+  // console.log(currentStringChar);
 }
 
 var lib =

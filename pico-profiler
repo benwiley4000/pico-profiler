@@ -1,0 +1,152 @@
+#!/usr/bin/env node
+
+var fs = require('fs');
+var path = require('path');
+
+if (!process.argv[2]) {
+  console.error('Error: No .p8 file specified!');
+  process.exit(1);
+}
+
+function insert(str, substring, index) {
+  return str.slice(0, index) + substring + str.slice(index);
+}
+
+var filename = path.resolve(process.argv[2]);
+var contents = fs.readFileSync(filename).toString();
+
+var debugContents = contents;
+var profiledFunctionNames = [];
+
+/*
+if we're inside a function this reflects how many
+blocks deep we are inside that function.
+note: for our purposes a "block" is something that
+starts with "do" or "then" or "function" and finishes
+with "end"
+e.g.
+-- here we are 0
+function mufunc()
+ -- here we are 1
+ if true then
+  -- here we are 2
+  for i=1,5 do
+   call_some_func_with_anonymous_fn(function()
+    -- here we are 4
+    print(i)
+   end)
+   -- here we are 3
+   print(i)
+  end
+  -- here we are 2
+ end
+ -- here we are 1
+end
+-- here we are 0
+*/
+var blockStack = [];
+var functionsDeep = 0;
+var currentStringChar = null;
+
+for (var i = 0; i < debugContents.indexOf('__gfx__'); i++) {
+  if (currentStringChar) {
+    var c = debugContents[i];
+    if (c === currentStringChar) {
+      currentStringChar = null;
+    } else if (c === '\\') {
+      // next char is escaped, so ignore it
+      i++;
+    }
+  } else if (!(
+    debugContents[i - 1] === ' ' ||
+    debugContents[i - 1] === '\n' ||
+    debugContents[i - 1] === ';'
+  )) {
+    continue;
+  } else if (debugContents.slice(i, i + 8) === 'function') {
+    if (blockStack.length === 0) {
+      // only handle top-level functions for now
+      var paramsStartIndex = i + debugContents.slice(i).indexOf('(') + 1;
+      var functionName = debugContents
+        .slice(i + 8, paramsStartIndex - 1)
+        .trim();
+      profiledFunctionNames.push(functionName);
+      var parensDeep = 1;
+      var j = paramsStartIndex;
+      while (parensDeep > 0) {
+        var c = debugContents[j];
+        if (currentStringChar) {
+          if (c === currentStringChar) {
+            currentStringChar = null;
+          } else if (c === '\\') {
+            // next char is escaped, so ignore it
+            j++;
+          }
+        } else if (c === '"' || c === '\'') {
+          currentStringChar = c;
+        } else if (c === '(') {
+          parensDeep++;
+        } else if (c === ')') {
+          parensDeep--;
+        }
+        j++;
+      }
+      var startProfileCode = ';__begin_fn_profile(' + functionName + ');';
+      debugContents = insert(
+        debugContents,
+        startProfileCode,
+        j
+      );
+      i = j + startProfileCode.length - 1;
+    }
+    blockStack.push('function');
+    functionsDeep++;
+  } else {
+    var rest = debugContents.slice(i);
+    if (rest.indexOf('end') === 0) {
+      var blockType = blockStack.pop();
+      var endProfileCode = ';__end_fn_profile();';
+      debugContents = insert(
+        debugContents,
+        endProfileCode,
+        i
+      );
+      i = i + endProfileCode - 1;
+    } else if (rest.indexOf('if') === 0) {
+      blockStack.push('if');
+    } else if (rest.indexOf('for') === 0) {
+      blockStack.push('for');
+    } else if (rest.indexOf('while') === 0) {
+      blockStack.push('while');
+    }
+  }
+}
+
+var lib =
+  '\n' +
+  '__profiled_fns={};' +
+  'function __profile_fn(fn_name);' +
+    '__profiled_fns[fn_name]={time=0};' +
+  'end;' +
+  '__callstack_curr={};' +
+  'function __begin_fn_profile(fn_name);' +
+    'add(__callstack_curr, {name=fn_name,t=time()});' +
+  'end;' +
+  'function __end_fn_profile();' +
+    'local entry=__callstack_curr[#__callstack_curr-1];' +
+    '__profiled_fns[entry.name].time += time()-local_entry.t;' +
+  'end;';
+
+debugContents += lib;
+debugContents += profiledFunctionNames.map(function(name) {
+  return ';__profile_fn("' + name + '")';
+});
+
+var endsWithP8 = filename.slice(-3).toLowerCase() === '.p8';
+var extension = '.debug.p8';
+var outFilename =
+  endsWithP8
+    ? filename.slice(0, -3) + extension
+    : filename + extension;
+
+fs.writeFileSync(outFilename, debugContents);
